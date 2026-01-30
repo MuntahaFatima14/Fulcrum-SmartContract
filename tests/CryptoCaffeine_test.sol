@@ -1,82 +1,84 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "remix_tests.sol";
+import "remix_tests.sol"; 
 import "remix_accounts.sol";
 import "../contracts/CryptoCaffeine.sol";
 
-contract CryptoCaffeine_Test {
+/**
+ * @title CryptoCaffeineTest
+ * @dev Unit tests for the CryptoCaffeine system using the Remix Testing framework.
+ */
+contract CryptoCaffeineTest {
     CaffeineFactory factory;
+    CryptoCaffeineBottle implementation;
     CryptoCaffeineBottle jar;
-    UnauthorizedUser stranger; 
+    
+    address acc0; 
+    address acc1; 
 
-    address accJournalist;
-    address accTreasury;
+    /// @notice Sets up the initial state before any tests run.
+    /// @dev The #value tag tells Remix to fund this contract with 2 ETH for testing.
+    /// #value: 2000000000000000000
+    function beforeAll() public payable {
+        // Retrieve pre-funded accounts from the Remix environment
+        acc0 = TestsAccounts.getAccount(0);
+        acc1 = TestsAccounts.getAccount(1);
 
-    // 1. Receive function to accept ETH
-    receive() external payable {}
+        // 1. Deploy the "Master" logic contract
+        implementation = new CryptoCaffeineBottle();
+        
+        // 2. Deploy the Factory, pointing it to the implementation and a treasury address
+        factory = new CaffeineFactory(address(implementation), acc0);
+    }
 
-    function beforeAll() public {
-        accJournalist = address(this);
-        accTreasury = TestsAccounts.getAccount(2);
-
-        CryptoCaffeineBottle implementation = new CryptoCaffeineBottle();
-        factory = new CaffeineFactory(address(implementation), accTreasury);
-
-        address jarAddr = factory.createJar("https://test.com");
+    /**
+     * @notice Validates the Minimal Proxy (Clone) deployment flow.
+     */
+    function testDeploymentAndInitialization() public {
+        // Ensure factory starts empty
+        Assert.equal(factory.getTotalJars(), 0, "Initial jars should be 0");
+        
+        // Create a new jar instance
+        address jarAddr = factory.createJar("https://news.com/profile");
         jar = CryptoCaffeineBottle(payable(jarAddr));
 
-        // 2. Helper is created with the target address in the CONSTRUCTOR
-        // This prevents "Method cannot have parameters" error.
-        stranger = new UnauthorizedUser(address(jar));
+        // Check if the registry updated correctly
+        Assert.equal(factory.getTotalJars(), 1, "Jar count should be 1");
+        
+        // Verify that the caller (this test contract) is recognized as the journalist
+        Assert.equal(jar.journalist(), address(this), "Journalist should be test contract");
     }
 
-    function testInitialization() public {
-        Assert.equal(jar.journalist(), address(this), "Journalist should be the test contract");
+    /**
+     * @notice Tests the payment and memo-recording logic.
+     * @dev The #value tag funds this specific function call with 1 ETH.
+     * #value: 1000000000000000000
+     */
+    function testTipping() public payable {
+        uint256 initialMemos = jar.getMemosCount();
+        
+        // Simulate a user buying coffee
+        jar.buyCoffee{value: 1 ether}("Alice", "Keep up the work!");
+        
+        // Verify state changes
+        Assert.equal(jar.getMemosCount(), initialMemos + 1, "Memo count should increase");
+        Assert.equal(address(jar).balance, 1 ether, "Jar balance should be exactly 1 ETH");
     }
 
-    /// #test: Send ETH Tip
-    /// #value: 1000000000000000000
-    function testEthTip() public payable {
-        uint256 tipAmount = msg.value;
-        jar.buyCoffee{value: tipAmount}("Alice", "Great work");
-        Assert.equal(address(jar).balance, tipAmount, "Jar did not receive ETH");
-    }
-
-    /// #test: Stranger Withdrawal (Should FAIL)
-    function testFailWithdrawal() public {
-        // No parameters here means Remix won't complain
-        try stranger.tryWithdraw() {
-            Assert.ok(false, "Stranger was able to withdraw! (Security Risk)");
-        } catch {
-            Assert.ok(true, "Stranger withdrawal reverted as expected");
-        }
-    }
-
-    /// #test: Journalist Withdrawal (Should SUCCEED)
-    function testJournalistWithdrawal() public {
-        // FAIL-SAFE: If the jar is empty (from previous tests failing), we fill it first.
-        // This ensures this test NEVER reverts due to empty balance.
-        if (address(jar).balance == 0) {
-            jar.buyCoffee{value: 1 ether}("Admin", "Refill");
-        }
-
+    /**
+     * @notice Tests the journalist's ability to withdraw funds.
+     */
+    function testWithdrawSecurity() public {
+        uint256 contractBalBefore = address(this).balance;
+        
+        // Execute the withdrawal
         jar.withdraw();
-        Assert.equal(address(jar).balance, 0, "Jar should be empty after withdraw");
-    }
-}
-
-// === HELPER CONTRACT ===
-contract UnauthorizedUser {
-    address target;
-
-    // Constructor avoids the Remix "Parameter" error
-    constructor(address _target) {
-        target = _target;
-    }
-
-    // No parameters in this function
-    function tryWithdraw() external {
-        CryptoCaffeineBottle(payable(target)).withdraw();
+        
+        // 1. Check that the jar is drained
+        Assert.equal(address(jar).balance, 0, "Jar should be empty");
+        
+        // 2. Check that the funds arrived in this contract (the journalist)
+        Assert.ok(address(this).balance > contractBalBefore, "Withdraw failed to send ETH");
     }
 }

@@ -1,19 +1,47 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
-import "./CryptoCaffeine.sol";
 
+import "@openzeppelin/contracts/proxy/Clones.sol";
+import "./CryptoCaffeineBottle.sol";
+
+/**
+ * @title CaffeineFactory
+ * @dev Factory contract to deploy cheap 'Clones' (proxies) of the CryptoCaffeineBottle.
+ */
 contract CaffeineFactory {
-    mapping(address => address) public journalistToContract;
+    address public immutable implementation; // The master logic contract address
+    address public immutable treasury;       // Set once at deployment
+    address[] public allJars;                // Registry of all deployed jars
 
-    event InstanceCreated(address indexed journalist, address contractAddress);
+    event JarCreated(address indexed journalist, address jarAddress, string iframeLink);
+    error InvalidImplementation();
 
-    function createInstance() external {
-        require(journalistToContract[msg.sender] == address(0), "Protocol already initialized");
+    constructor(address _implementation, address _treasury) {
+        if (_implementation == address(0)) revert InvalidImplementation();
+        implementation = _implementation;
+        treasury = _treasury;
+    }
+
+    /**
+     * @notice Deploys a new tipping jar for a journalist.
+     * @dev Uses EIP-1167 Minimal Proxy for extremely low-cost deployment.
+     * @param _iframeLink The content link for the new journalist.
+     * @return clone The address of the newly deployed jar.
+     */
+    function createJar(string calldata _iframeLink) external returns (address) {
+        // Clones the logic contract without redeploying code, saving ~90% gas
+        address clone = Clones.clone(implementation);
         
-        // Deploys the child contract and passes the journalist's address as owner
-        CryptoCaffeine newInstance = new CryptoCaffeine(msg.sender);
-        journalistToContract[msg.sender] = address(newInstance);
+        // Initialize the new clone with journalist data
+        CryptoCaffeineBottle(payable(clone)).initialize(msg.sender, treasury, _iframeLink);
         
-        emit InstanceCreated(msg.sender, address(newInstance));
+        allJars.push(clone);
+        emit JarCreated(msg.sender, clone, _iframeLink);
+        return clone;
+    }
+
+    /// @notice Returns the total number of jars deployed through this factory.
+    function getTotalJars() external view returns (uint256) {
+        return allJars.length;
     }
 }
